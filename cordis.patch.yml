@@ -1,0 +1,15 @@
+# dsh-session-bridge bundle patch
+#
+# 一行宿主插件，提供五个模型工具：
+#   dsh_web_url        —— 本机 Web GUI 的已认证访问地址
+#   dsh_session_create —— 新建前台会话
+#   dsh_session_prompt —— 往会话发提示词
+#   dsh_session_read   —— 读回会话转录（可等待回合结束）
+#   dsh_session_cancel —— 取消当前回合
+#
+# 这些能力 Host 本来就有（ctx.sessionController / ctx.connection），
+# 只是没有暴露给 Agent。本插件不引入任何依赖。
+
+- insert:
+    - id: dsh-session-bridge
+      name: dsh-session-bridge

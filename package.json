@@ -1,0 +1,43 @@
+{
+  "name": "dsh-session-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "Let a DeepSeek Harness agent open foreground sessions, drive them and read the result back, and hand out the authenticated URL of the local web app.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "session",
+    "automation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elfgzp/dsh-session-bridge.git"
+  },
+  "homepage": "https://github.com/elfgzp/dsh-session-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/elfgzp/dsh-session-bridge/issues"
+  },
+  "engines": {
+    "dsh": ">=0.2.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

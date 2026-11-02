@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Session Bridge">
+  <defs>
+    <linearGradient id="sb-accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#6366f1"/>
+    </linearGradient>
+  </defs>
+  <rect x="5" y="13" width="30" height="24" rx="5" fill="none" stroke="url(#sb-accent)" stroke-width="3"/>
+  <rect x="29" y="27" width="30" height="24" rx="5" fill="none" stroke="url(#sb-accent)" stroke-width="3"/>
+  <path d="M24 41h6a5 5 0 0 1 5 5v0" fill="none" stroke="url(#sb-accent)" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="20" cy="25" r="3" fill="url(#sb-accent)"/>
+</svg>

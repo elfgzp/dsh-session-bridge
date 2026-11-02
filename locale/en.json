@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Bridge",
+    "description": "Lets the agent open foreground sessions, drive them and read the result back, and hand out the authenticated URL of the local web app."
+  }
+}
