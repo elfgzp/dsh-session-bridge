@@ -24,11 +24,22 @@ Each of those is one tool call here.
 
 | Tool | What it does |
 | --- | --- |
-| `dsh_web_url` | The authenticated URL of the local web GUI. Open it in a browser and the browser exchanges the launch token for a signed cookie automatically. |
+| `dsh_web_url` | The local web GUI URL. Masks the launch token by default; pass `includeToken: true` to get a browser-usable URL. |
 | `dsh_session_create` | Create a foreground session. Returns its id. |
 | `dsh_session_prompt` | Send a prompt to a session (`queue` or `steer`). |
 | `dsh_session_read` | Read a session's transcript. `waitMs` waits for the current turn to finish. |
 | `dsh_session_cancel` | Cancel a session's running turn. |
+
+### Token handling in `dsh_web_url`
+
+The launch token minted by `connection.authenticatedUrl()` is a live credential:
+any browser that opens the URL gets an authenticated session. A tool result also
+lands in the conversation transcript, and from there into logs, exports and any
+copy of the chat.
+
+So the default is `maskToken`: the tool returns `origin` plus a URL whose token is
+reduced to its first and last four characters. Pass `includeToken: true` only when
+something actually needs to open a browser, and do not persist or paste the result.
 
 ## Foreground vs delegated
 

@@ -70,6 +70,31 @@ function clip(text, limit = MAX_TEXT) {
   return `${head}\n…（省略 ${value.length - head.length - tail.length} 字符）…\n${tail}`;
 }
 
+/**
+ * 把 URL 里的启动 token 打码，只保留可读的主机与路径。
+ *
+ * token 是活凭据，一旦进了聊天记录就等于泄露，所以默认不返回明文。
+ * 保留首尾各 4 个字符是为了让人能比对「是不是同一个」，但不足以复用。
+ *
+ * @param {string} url 完整 URL
+ * @returns {string} 打码后的 URL
+ */
+function maskToken(url) {
+  try {
+    const parsed = new URL(url);
+    const token = parsed.searchParams.get("token");
+    if (!token) return url;
+    // 用 ASCII 省略号：… 会被 URL 编码成 %E2%80%A6，不可读。
+    const shown =
+      token.length <= 12 ? "***" : `${token.slice(0, 4)}...${token.slice(-4)}`;
+    parsed.searchParams.set("token", shown);
+    // URL 会把 * 原样保留；这里手工拼，避免 searchParams 重新编码。
+    return parsed.toString().replace(encodeURIComponent(shown), shown);
+  } catch {
+    return url.replace(/([?&]token=)[^&]+/, "$1***");
+  }
+}
+
 /** 把 turn/end 的 reason（一个 {kind:...} 对象）压成短标签。 */
 function reasonLabel(reason) {
   if (typeof reason === "string") return reason;
@@ -245,11 +270,23 @@ export function apply(ctx) {
   register({
     name: "dsh_web_url",
     description:
-      "返回本机 DeepSeek Harness Web GUI 的已认证访问地址。" +
-      "地址里带一次性启动 token，浏览器打开后会自动换成签名 cookie，" +
-      "之后就可以用该浏览器访问这个 DSH 实例（查看会话、回答弹窗、读面板）。",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-    async execute() {
+      "返回本机 DeepSeek Harness Web GUI 的访问地址。" +
+      "默认（maskToken=true）只返回 origin 和一个打码后的 url，不泄露启动 token。" +
+      "需要真正打开浏览器时传 includeToken=true 才返回带 token 的完整地址；" +
+      "该 token 是活的凭据，不要把它贴进聊天记录、日志或提交里。",
+    parameters: {
+      type: "object",
+      properties: {
+        includeToken: {
+          type: "boolean",
+          description:
+            "true 时返回带启动 token 的完整地址（可直接给浏览器打开）；" +
+            "省略或 false 时 token 被打码。默认 false。",
+        },
+      },
+      additionalProperties: false,
+    },
+    async execute(input) {
       const webApp = service(ctx, "webApp");
       const connection = service(ctx, "connection");
       if (!webApp || typeof webApp.getAdvertisedUrl !== "function") {
@@ -260,11 +297,27 @@ export function apply(ctx) {
         );
       }
       const origin = webApp.getAdvertisedUrl();
-      const url =
+      const full =
         connection && typeof connection.authenticatedUrl === "function"
           ? connection.authenticatedUrl(origin)
           : origin;
-      return { ok: true, url, origin };
+      const includeToken = input?.includeToken === true;
+      if (includeToken) {
+        return {
+          ok: true,
+          url: full,
+          origin,
+          tokenIncluded: true,
+          warning: "该 URL 含活的启动 token，用完不要留存、不要贴进聊天或提交。",
+        };
+      }
+      return {
+        ok: true,
+        url: maskToken(full),
+        origin,
+        tokenIncluded: false,
+        hint: "需要浏览器直接可用请传 includeToken=true；默认不返回明文 token。",
+      };
     },
   });
 
