@@ -23,6 +23,9 @@
   "engines": {
     "dsh": ">=0.2.0"
   },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "exports": {
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json",
@@ -30,6 +33,7 @@
   },
   "files": [
     "index.js",
+    "lib/*.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

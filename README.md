@@ -24,7 +24,7 @@ Each of those is one tool call here.
 
 | Tool | What it does |
 | --- | --- |
-| `dsh_web_url` | The local web GUI URL. Masks the launch token by default; pass `includeToken: true` to get a browser-usable URL. |
+| `dsh_web_url` | The local web GUI URL. Masks the launch token by default; pass `includeToken: true` to get a browser-usable URL (requires the `danger-full-access` preset). |
 | `dsh_session_create` | Create a foreground session. Returns its id. |
 | `dsh_session_prompt` | Send a prompt to a session (`queue` or `steer`). |
 | `dsh_session_read` | Read a session's transcript. `waitMs` waits for the current turn to finish. |
@@ -40,6 +40,29 @@ copy of the chat.
 So the default is `maskToken`: the tool returns `origin` plus a URL whose token is
 reduced to its first and last four characters. Pass `includeToken: true` only when
 something actually needs to open a browser, and do not persist or paste the result.
+
+**`includeToken: true` is gated on the caller's permission preset.** The tool asks
+the `permissionPresets` service for the calling session's preset
+(`current(session)`) and resolves it to `{ sandbox, approval }`. The plain token is
+only handed out when `sandbox === "danger-full-access"`; every other preset gets
+`insufficient-permission` plus the masked URL instead.
+
+The gate fails closed. If `permissionPresets` is missing (older or headless
+deployments), if `current()` returns `custom` that `resolve()` cannot handle, if
+either call throws, or if `execution.agent.session` is unavailable, the answer is
+"no token" — never "allow".
+
+### Tests
+
+```sh
+npm test        # node --test test/*.test.mjs
+```
+
+`lib/format.js` holds the pure functions (`maskToken`, `clip`, `reasonLabel`,
+`transcribe`, `waitForTurn`); it imports nothing from the Host, so the suite runs
+on plain Node 20 with no dependencies. `test/web-url.test.mjs` wires a fake `ctx`
+through `apply()` to cover the permission gate, including all the fail-closed
+paths.
 
 ## Foreground vs delegated
 

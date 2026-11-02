@@ -24,6 +24,8 @@
 
 import { randomUUID } from "node:crypto";
 
+import { maskToken, transcribe, waitForTurn } from "./lib/format.js";
+
 /** 插件名（与 cordis.patch.yml 的行 id 一致）。 */
 export const name = "dsh-session-bridge";
 
@@ -32,11 +34,6 @@ export const name = "dsh-session-bridge";
  * （headless 就没有 webApp），缺席时工具给出可读的错误而不是挂载失败。
  */
 export const inject = ["tools"];
-
-/** 单条消息最多回给模型多少字符，避免一次读回把上下文撑爆。 */
-const MAX_TEXT = 4000;
-/** tool/call 的 arguments 最多回给模型多少字符。 */
-const MAX_ARGS = 1200;
 
 /** 统一的结果形状：ok=false 时带 error，模型能直接读懂。 */
 function fail(code, message, hint) {
@@ -52,154 +49,84 @@ function service(ctx, key) {
   }
 }
 
-/** 从 ContentBlock[] 里抽出纯文本。 */
-function textOf(content) {
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block) => block && block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text)
-    .join("");
-}
-
-/** 截断长文本，保留头尾并标注省略量。 */
-function clip(text, limit = MAX_TEXT) {
-  const value = typeof text === "string" ? text : String(text ?? "");
-  if (value.length <= limit) return value;
-  const head = value.slice(0, Math.floor(limit * 0.7));
-  const tail = value.slice(-Math.floor(limit * 0.2));
-  return `${head}\n…（省略 ${value.length - head.length - tail.length} 字符）…\n${tail}`;
-}
+/** 允许拿到明文启动 token 的 sandbox 档位。 */
+const TOKEN_SANDBOX = "danger-full-access";
 
 /**
- * 把 URL 里的启动 token 打码，只保留可读的主机与路径。
+ * 判断这次调用是否有资格拿明文启动 token。
  *
- * token 是活凭据，一旦进了聊天记录就等于泄露，所以默认不返回明文。
- * 保留首尾各 4 个字符是为了让人能比对「是不是同一个」，但不足以复用。
+ * token 能让人拿到浏览器里的全权控制，所以门槛要 fail closed：
+ * 只要有任何一环拿不到确定答案（服务缺席、方法缺失、抛错、返回形状不对），
+ * 都算「没权限」，绝不因为读不到信息而放行。
  *
- * @param {string} url 完整 URL
- * @returns {string} 打码后的 URL
+ * @param {any} ctx 宿主上下文
+ * @param {any} session 调用方会话（execution.agent.session）
+ * @returns {{ allowed: boolean, preset: string|null, sandbox: string|null, reason: string }}
+ *   allowed=false 时 reason 说明具体卡在哪一步，便于模型自查。
  */
-function maskToken(url) {
+function checkTokenPermission(ctx, session) {
+  if (!session) {
+    return {
+      allowed: false,
+      preset: null,
+      sandbox: null,
+      reason: "拿不到当前会话（execution.agent.session 为空），无法确认权限档位",
+    };
+  }
+  // permissionPresets 是可选的宿主服务：老版本 / 精简部署可能没有。
+  const presets = service(ctx, "permissionPresets");
+  if (!presets || typeof presets.current !== "function" || typeof presets.resolve !== "function") {
+    return {
+      allowed: false,
+      preset: null,
+      sandbox: null,
+      reason: "宿主没有可用的 permissionPresets 服务，无法确认权限档位",
+    };
+  }
+  let preset;
   try {
-    const parsed = new URL(url);
-    const token = parsed.searchParams.get("token");
-    if (!token) return url;
-    // 用 ASCII 省略号：… 会被 URL 编码成 %E2%80%A6，不可读。
-    const shown =
-      token.length <= 12 ? "***" : `${token.slice(0, 4)}...${token.slice(-4)}`;
-    parsed.searchParams.set("token", shown);
-    // URL 会把 * 原样保留；这里手工拼，避免 searchParams 重新编码。
-    return parsed.toString().replace(encodeURIComponent(shown), shown);
-  } catch {
-    return url.replace(/([?&]token=)[^&]+/, "$1***");
+    preset = presets.current(session);
+  } catch (error) {
+    return {
+      allowed: false,
+      preset: null,
+      sandbox: null,
+      reason: `读取当前权限档位失败：${String(error?.message ?? error)}`,
+    };
   }
-}
-
-/** 把 turn/end 的 reason（一个 {kind:...} 对象）压成短标签。 */
-function reasonLabel(reason) {
-  if (typeof reason === "string") return reason;
-  if (!reason || typeof reason !== "object") return null;
-  const kind = typeof reason.kind === "string" ? reason.kind : null;
-  if (kind === "aborted") {
-    const cause = reason.reason ?? reason.cause;
-    const causeKind = cause && typeof cause === "object" ? cause.kind : cause;
-    return causeKind ? `aborted(${causeKind})` : "aborted";
+  if (typeof preset !== "string" || preset === "") {
+    return {
+      allowed: false,
+      preset: null,
+      sandbox: null,
+      reason: "宿主未能给出当前权限档位名",
+    };
   }
-  if (kind === "error") {
-    const message = reason.error?.message ?? reason.error?.code;
-    return message ? `error(${message})` : "error";
+  let spec;
+  try {
+    spec = presets.resolve(preset);
+  } catch (error) {
+    // current() 返回 'custom' 时 resolve() 可能抛错——按无权限处理。
+    return {
+      allowed: false,
+      preset,
+      sandbox: null,
+      reason: `权限档位 ${preset} 无法解析：${String(error?.message ?? error)}`,
+    };
   }
-  return kind;
-}
-
-/**
- * 把一个会话的事件流压成模型能读的转录。
- *
- * @param {readonly any[]} events 会话事件
- * @returns {{ messages: any[], toolCalls: any[], turns: number, lastTurnReason: string|null }}
- */
-function transcribe(events) {
-  const messages = [];
-  const toolCalls = [];
-  let turns = 0;
-  let lastTurnReason = null;
-
-  for (const event of events ?? []) {
-    const type = event?.type;
-    const data = event?.data ?? {};
-    switch (type) {
-      case "user/message": {
-        const text = textOf(data.content);
-        if (text) messages.push({ role: "user", text: clip(text) });
-        break;
-      }
-      case "assistant/message": {
-        const text = textOf(data.message?.content);
-        if (text) messages.push({ role: "assistant", text: clip(text) });
-        break;
-      }
-      case "tool/call": {
-        toolCalls.push({
-          turn: data.turn,
-          step: data.step,
-          name: data.name,
-          arguments: clip(data.arguments, MAX_ARGS),
-        });
-        break;
-      }
-      case "tool/result": {
-        const message = data.message ?? {};
-        const text = textOf(message.content);
-        toolCalls.push({
-          turn: data.turn,
-          step: data.step,
-          name: message.source?.kind === "tool" ? message.source.toolName : undefined,
-          result: clip(text, MAX_ARGS),
-          isError: message.isError === true,
-        });
-        break;
-      }
-      case "turn/end": {
-        turns = Math.max(turns, data.turn ?? 0);
-        lastTurnReason = reasonLabel(data.reason);
-        break;
-      }
-      default:
-        break;
-    }
+  const sandbox = typeof spec?.sandbox === "string" ? spec.sandbox : null;
+  if (!sandbox) {
+    return { allowed: false, preset, sandbox: null, reason: `权限档位 ${preset} 没有 sandbox 信息` };
   }
-  return { messages, toolCalls, turns, lastTurnReason };
-}
-
-/**
- * 等待会话里出现一个「完成」的回合。
- *
- * 判定：存在 turn/end，且它的 turn 不小于任何一条 user/message 的 turn。
- * 这样既能等到本轮跑完，又不会因为历史回合而立刻返回。
- *
- * @param {any} sessionController 宿主服务
- * @param {string} sessionId 目标会话
- * @param {number} waitMs 等待上限（毫秒）；0 表示不等待
- * @param {AbortSignal} signal 取消信号
- */
-async function waitForTurn(sessionController, sessionId, waitMs, signal) {
-  const deadline = Date.now() + Math.max(0, waitMs);
-  let inspection = await sessionController.inspect(sessionId, signal);
-
-  for (;;) {
-    const events = inspection?.events ?? [];
-    const userTurns = events
-      .filter((event) => event?.type === "user/message")
-      .map((event) => event?.data?.turn ?? 0);
-    const needed = userTurns.length > 0 ? Math.max(...userTurns) : 0;
-    const finished = events.some(
-      (event) => event?.type === "turn/end" && (event?.data?.turn ?? 0) >= needed,
-    );
-    if (finished) return inspection;
-    if (Date.now() >= deadline || signal?.aborted) return inspection;
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    inspection = await sessionController.inspect(sessionId, signal);
+  if (sandbox !== TOKEN_SANDBOX) {
+    return {
+      allowed: false,
+      preset,
+      sandbox,
+      reason: `当前权限档位 ${preset} 的 sandbox=${sandbox}，需要 ${TOKEN_SANDBOX}`,
+    };
   }
+  return { allowed: true, preset, sandbox, reason: "ok" };
 }
 
 /** 一个工具的 output.render：把结果对象变成给模型看的文本块。 */
@@ -273,7 +200,9 @@ export function apply(ctx) {
       "返回本机 DeepSeek Harness Web GUI 的访问地址。" +
       "默认（maskToken=true）只返回 origin 和一个打码后的 url，不泄露启动 token。" +
       "需要真正打开浏览器时传 includeToken=true 才返回带 token 的完整地址；" +
-      "该 token 是活的凭据，不要把它贴进聊天记录、日志或提交里。",
+      "该 token 是活的凭据，不要把它贴进聊天记录、日志或提交里。" +
+      "includeToken=true 要求当前会话的权限档是 danger-full-access，否则返回 " +
+      "insufficient-permission 并退回打码 URL。",
     parameters: {
       type: "object",
       properties: {
@@ -281,12 +210,13 @@ export function apply(ctx) {
           type: "boolean",
           description:
             "true 时返回带启动 token 的完整地址（可直接给浏览器打开）；" +
-            "省略或 false 时 token 被打码。默认 false。",
+            "省略或 false 时 token 被打码。默认 false。" +
+            "仅当当前会话权限档为 danger-full-access 时可用。",
         },
       },
       additionalProperties: false,
     },
-    async execute(input) {
+    async execute(input, execution) {
       const webApp = service(ctx, "webApp");
       const connection = service(ctx, "connection");
       if (!webApp || typeof webApp.getAdvertisedUrl !== "function") {
@@ -303,11 +233,29 @@ export function apply(ctx) {
           : origin;
       const includeToken = input?.includeToken === true;
       if (includeToken) {
+        // 明文 token = 浏览器全权控制，按调用会话的权限档放行；读不到就拒绝。
+        const permission = checkTokenPermission(ctx, execution?.agent?.session);
+        if (!permission.allowed) {
+          // 拒绝时仍给出打码 URL：调用方拿不到 token，但至少能看到地址。
+          return {
+            ...fail(
+              "insufficient-permission",
+              `无权获取明文启动 token：${permission.reason}`,
+              "token 等同于浏览器全权控制，只发给 danger-full-access 档位的会话。" +
+                "如需打开页面，可以先用默认的打码 URL 确认地址，再由人手工打开；" +
+                "或在充分确认风险后把当前会话切到 danger-full-access 档位重试。",
+            ),
+            url: maskToken(full),
+            origin,
+            tokenIncluded: false,
+          };
+        }
         return {
           ok: true,
           url: full,
           origin,
           tokenIncluded: true,
+          permission: { preset: permission.preset, sandbox: permission.sandbox },
           warning: "该 URL 含活的启动 token，用完不要留存、不要贴进聊天或提交。",
         };
       }
@@ -316,7 +264,7 @@ export function apply(ctx) {
         url: maskToken(full),
         origin,
         tokenIncluded: false,
-        hint: "需要浏览器直接可用请传 includeToken=true；默认不返回明文 token。",
+        hint: "需要浏览器直接可用请传 includeToken=true（需 danger-full-access 权限档）；默认不返回明文 token。",
       };
     },
   });
