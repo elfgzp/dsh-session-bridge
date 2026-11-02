@@ -70,6 +70,23 @@ function clip(text, limit = MAX_TEXT) {
   return `${head}\n…（省略 ${value.length - head.length - tail.length} 字符）…\n${tail}`;
 }
 
+/** 把 turn/end 的 reason（一个 {kind:...} 对象）压成短标签。 */
+function reasonLabel(reason) {
+  if (typeof reason === "string") return reason;
+  if (!reason || typeof reason !== "object") return null;
+  const kind = typeof reason.kind === "string" ? reason.kind : null;
+  if (kind === "aborted") {
+    const cause = reason.reason ?? reason.cause;
+    const causeKind = cause && typeof cause === "object" ? cause.kind : cause;
+    return causeKind ? `aborted(${causeKind})` : "aborted";
+  }
+  if (kind === "error") {
+    const message = reason.error?.message ?? reason.error?.code;
+    return message ? `error(${message})` : "error";
+  }
+  return kind;
+}
+
 /**
  * 把一个会话的事件流压成模型能读的转录。
  *
@@ -119,7 +136,7 @@ function transcribe(events) {
       }
       case "turn/end": {
         turns = Math.max(turns, data.turn ?? 0);
-        lastTurnReason = data.reason ?? null;
+        lastTurnReason = reasonLabel(data.reason);
         break;
       }
       default:
